@@ -2,7 +2,7 @@
  Project to analyze NBA defensive matchup data
 
 
-# DESCRIPTION
+## DESCRIPTION
 
 The package contains Python and R code files and Tableau workbook files. 
 
@@ -27,7 +27,7 @@ We used the following endpoints to gather our data:
 There is a Python package, "nba_api", that abstracts the API details and allows developers to use Python to scrape that data and manipulate using Python's libraries (pandas, numpy, etc.). We used this package to do the web scraping. The package's site is hosted on GitHub at https://github.com/swar/nba_api.
 
 
-# INSTALLATION
+## INSTALLATION
 
 To install and setup the code, ensure that the above listed tools, Python, R, Gephi, and Tableau, are installed on the working computer. Additionally, there should be an IDE to work in the Python files and R Studio for the R code work.
 
@@ -42,7 +42,7 @@ The code generates various CSV files for Tableau to read and display. All of the
 The Tableau workbook is located in the same directory as the CSV files. When opened, it will display the dashboards and reports from there.
 
 
-# EXECUTION
+## EXECUTION
 
 With the tools installed and the files saved to the appropriate directories, perform the following steps:
 
