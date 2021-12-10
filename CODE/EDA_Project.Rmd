@@ -1,0 +1,520 @@
+---
+title: "Team 055 Project EDA"
+author:  "Larry Heckel"
+date: "November 7, 2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+The project team is conducting defensive analysis based on the project proposal and progress report. This work is EDA using linear regression, to determine key independent variables for the three defensive metrics in the data set.
+
+# Conclusions/Executive Summary
+
+#### Putting these at the top for easy digestion
+
+I only analyzed the true shooting metric, and in the following manner:
+
+Substracted the matchup ts from the off player ts to get a matchup ts difference. With this subtraction, a positive number means that the offensive player performs better against this defender. So for the defender, a positive number is bad.
+
+Weighted the ts difference by the minutes played (the data is still at the player-versus-player level) and then grouped by the posn-vs-posn and height-vs-height, to get a total sum of the weighted ts, then divided by the minutes to get a weighted average ts difference. This difference is for each defender, by the posn-vs-posn and height variables. 
+
+This data frame is saved in the EDA_raw_grouped.csv file. Additionally, I save CSV files for the summary statistics with various subsets and groupings, these files have the naming convention "stats_%.csv".
+
+I ran the linear regression on the full grouped data, then on the data where the matchup minutes are over 8 (1st quantile), then when the minutes are over 38 (median).
+
+The linear regression model improves from full to 38 minutes, with the final r-squared being about 10%.
+
+Additionally, the combination of posn and height as a single variable performs better across every data subset, versus the individual ones or the individual ones together (in the model).
+
+Not all posn-hgt combos are significant, and what this analysis would tell coaches is to seek out particular favorable matchups, and avoid certain unfavorable matchups.
+
+The regression at the bottom gives the most significant results.
+
+Next step would be to perform the same analysis on the other dependent variables, to see if the conclusions are the same across the metrics.
+
+Additional next steps would be to look at other models/analysis techniques for additional insights. As this would be supervised learning, we might want to look at Random Forest or SVM, for example.
+
+
+
+## Data Description
+
+The MATCHUP data consists of the following variables:
+
+1. *off_player_id*: (id-number)
+2. *off_player_name*: (text)
+3. *def_player_id*: (id-number)
+4. *def_player_name*: (text))
+5. *matchup_min*: (continuous)
+6. *matchup_player_pts*: (integer)
+7. *matchup_team_pts*: (integer)
+8. *matchup_efs*: (continuous)
+9. *matchup_ts*: (continuous)
+10-14. Columns not used
+15. *team_id*: (id-number)
+16. *off_player_min*: (integer)
+17. *off_player_pts*: (integer)
+18. *off_player_efg*: (continuous)
+19. *of_player_ts*:  (continuous)
+20. *team_name*:  (text)
+21. *pts*:  (continuous)
+22. *season_year*:  (id-number)
+23. *off_player_pos*:  (text)
+24. *def_player_pos*:  (text)
+25. *index_level_0*:  (id-number)
+
+
+The PLAYER data consists of the following variables (only listing the columns used, after transformation, code below will remove the unnecessary columns and transform):
+
+1. *off_player_id*: (id-number)
+2. *off_player_weight*: (integer)
+3. *off_player_height*: (integer)
+4. *off_player_height_cat*:  (text-categorical)
+
+Same columns for defensive players.
+
+## Read the data
+
+```{r, message=FALSE, warning=FALSE}
+# Import libraries
+library(car)
+library(MASS)
+library(arrow) #for reading the parquet file
+library(dplyr)
+library(tidyr)
+library(stringr)
+```
+
+
+
+```{r}
+edaRawData = read_parquet(
+  "eda_data.parquet",
+  col_select = NULL,
+  as_data_frame = TRUE
+)
+edaraw.row.cnt = nrow(edaRawData)
+```
+
+```{r}
+# create height_cat column for (short/tall) greater the median in inches is tall
+edaRawData <- transform(edaRawData, off_height_cat=ifelse(off_height>median(edaRawData$off_height),'tall','short'))
+edaRawData <- transform(edaRawData, def_height_cat=ifelse(def_height>median(edaRawData$def_height),'tall','short'))
+
+```
+
+```{r}
+# create sum of the weighted true shooting
+# (matchupts-offplayerts)*matchupmins
+# a negative value means that the defensive player
+# is holding the off player to a lower shooting pct
+# than their norm, so it is better for the defensive
+# player
+
+edaRawData$sum_ts_def <- (edaRawData$matchup_ts)*edaRawData$matchup_min
+
+edaRawData$sum_ts_off <- (edaRawData$off_player_ts)*edaRawData$matchup_min
+
+edaRawData$weighted_ts_diff <- edaRawData$sum_ts_def - edaRawData$sum_ts_off
+
+```
+
+```{r}
+# create the combined position groupings column
+# for ease of analysis
+edaRawData$off_def_posn <- str_c(edaRawData$off_player_pos,'-',edaRawData$def_player_pos)
+
+# create the combined height groupings column
+# for ease of analysis
+edaRawData$off_def_height <- str_c(edaRawData$off_height_cat,'-',edaRawData$def_height_cat)
+```
+
+Create the actual EDA data file now
+
+The columns we want:
+
+def_player_name
+off_def_posn
+off_def_height
+matchup_min
+weighted_ts_diff
+
+Then we will create the final weighted_ts_diff column as
+
+sum_ts_diff / matchup_min.
+
+This will be the column to EDA on.
+
+
+
+```{r}
+# create the ungrouped EDA data file
+select_vars <- c("def_player_name","off_def_posn","off_def_height","matchup_min","weighted_ts_diff")
+edaRawData_ungrouped <- edaRawData[select_vars]
+
+
+```
+
+```{r}
+
+# now created the grouped EDA data file
+grp <- c("def_player_name","off_def_posn","off_def_height")
+edaRawData_grouped <- edaRawData_ungrouped %>%
+                        group_by(across(all_of(grp))) %>% 
+                        summarize(final_ts_diff = sum(weighted_ts_diff)/sum(matchup_min),total_matchup_min=sum(matchup_min),total_ts_diff=sum(weighted_ts_diff))
+
+edaRawData_grouped$posn_height_combo <- str_c(edaRawData_grouped$off_def_posn,'-',edaRawData_grouped$off_def_height)
+
+
+
+```
+
+```{r}
+# export to csv to check in Excel
+write.csv(edaRawData_ungrouped,"EDA.csv")
+write.csv(edaRawData,"EDA_raw.csv")
+write.csv(edaRawData_grouped,"EDA_raw_grouped.csv")
+```
+
+Now we can do the actual EDA.
+
+```{r}
+# histograms of minutes matched up, do we need to 
+# subset/restrict based on some minimum # of minutes?
+print(summary(edaRawData_grouped$total_matchup_min))
+
+hist(edaRawData_grouped$total_matchup_min,breaks = seq(min(edaRawData_grouped$total_matchup_min), max(edaRawData_grouped$total_matchup_min), length.out = 25))
+
+
+with(edaRawData_grouped, hist(total_matchup_min[total_matchup_min >= 8 & total_matchup_min < 140], breaks=seq(0,140,by=2)))
+     
+
+
+```
+
+Let's create a df of greater than 8 minutes matched up and run linear regression on both df's, to see if there is a difference in position matchups and heights
+
+```{r}
+# this eliminates about 1400 rows
+edaRawData_grouped_over8 <- edaRawData_grouped[ which(edaRawData_grouped$total_matchup_min >= 8), ]
+
+nrow(edaRawData_grouped)
+nrow(edaRawData_grouped_over8)
+
+```
+Let's do some initial visualizations
+
+```{r}
+# with the full grouped data set first
+boxplot(final_ts_diff~off_def_posn, data=edaRawData_grouped,main="ts_diff by position matchup")
+
+boxplot(final_ts_diff~off_def_height, data=edaRawData_grouped,main="ts_diff by height matchup")
+
+boxplot(final_ts_diff~posn_height_combo, data=edaRawData_grouped,main="ts_diff by combo matchup")
+
+# do summaries by groupings
+stats_posn_full <- edaRawData_grouped %>%                               
+  group_by(off_def_posn) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_height_full <- edaRawData_grouped %>%                               
+  group_by(off_def_height) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_all_full <- edaRawData_grouped %>%                               
+  group_by(off_def_height,off_def_posn) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+
+stats_all_combo <- edaRawData_grouped %>%                               
+  group_by(posn_height_combo) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+# export the data frames to csv for summary stats reference
+write.csv(stats_height_full,"stats_height_full.csv")
+write.csv(stats_posn_full,"stats_posn_full.csv")
+write.csv(stats_all_full,"stats_all_full.csv")
+write.csv(stats_all_combo,"stats_all_combo.csv")
+
+
+
+```
+
+
+
+
+
+So now let's run a linear regression on each data set and see what we get.
+
+```{r}
+model_full_both = lm(final_ts_diff~off_def_posn+off_def_height, data=edaRawData_grouped)
+# print(summary(model_full_both))
+
+model_full_posn = lm(final_ts_diff~off_def_posn, data=edaRawData_grouped)
+# print(summary(model_full_posn))
+
+model_full_height = lm(final_ts_diff~off_def_height, data=edaRawData_grouped)
+# print(summary(model_full_height))
+
+model_full_combo = lm(final_ts_diff~posn_height_combo, data=edaRawData_grouped)
+print(summary(model_full_combo))
+```
+
+```{r}
+# only going to continue with combo model b/c it is the highest r-squared value
+cook = cooks.distance(model_full_combo)
+plot(cook,type="h",lwd=3, ylab = "Cook’s Distance")
+cook[which(cook>1)]
+
+
+```
+Conclusion is no outliers by Cook's Distance measure.
+
+```{r}
+res = stdres(model_full_combo)
+plot(edaRawData_grouped$final_ts_diff, res, xlab = "ts_diff", ylab = "Residuals", pch = 19)
+```
+
+```{r}
+plot(model_full_combo$fitted.values, res, xlab = "Fitted Values", ylab = "Residuals", pch = 19)
+```
+
+```{r}
+plot(edaRawData_grouped$final_ts_diff,model_full_combo$fitted.values, xlab = "actual ts diff", ylab = "fitted ts diff", pch = 19)
+```
+
+
+```{r}
+hist(res, xlab="Residuals", main= "Histogram of Residuals")
+qqnorm(res)
+qqline(res)
+```
+
+
+### Now do the same for the over 8 minutes data
+
+
+```{r}
+# now do the same for the over 8 minutes data
+boxplot(final_ts_diff~off_def_posn, data=edaRawData_grouped_over8,main="ts_diff by position matchup")
+
+boxplot(final_ts_diff~off_def_height, data=edaRawData_grouped_over8,main="ts_diff by height matchup")
+
+boxplot(final_ts_diff~posn_height_combo, data=edaRawData_grouped_over8,main="ts_diff by combo matchup")
+
+# do summaries by groupings
+stats_posn_full_over8 <- edaRawData_grouped_over8 %>%                               
+  group_by(off_def_posn) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_height_full_over8 <- edaRawData_grouped_over8 %>%                               
+  group_by(off_def_height) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_all_full_over8 <- edaRawData_grouped_over8 %>%                               
+  group_by(off_def_height,off_def_posn) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_combo_full_over8 <- edaRawData_grouped_over8 %>%                               
+  group_by(posn_height_combo) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+
+# export the data frames to csv for summary stats reference
+write.csv(stats_height_full_over8,"stats_height_full_over8.csv")
+write.csv(stats_posn_full_over8,"stats_posn_full_over8.csv")
+write.csv(stats_all_full_over8,"stats_all_full_over8.csv")
+write.csv(stats_combo_full_over8,"stats_combo_full_over8.csv")
+
+```
+
+
+```{r}
+model_full_both_over8 = lm(final_ts_diff~off_def_posn+off_def_height, data=edaRawData_grouped_over8)
+# print(summary(model_full_both_over8))
+
+model_full_posn_over8 = lm(final_ts_diff~off_def_posn, data=edaRawData_grouped_over8)
+# print(summary(model_full_posn_over8))
+
+model_full_height_over8 = lm(final_ts_diff~off_def_height, data=edaRawData_grouped_over8)
+# print(summary(model_full_height_over8))
+
+model_full_combo_over8 = lm(final_ts_diff~posn_height_combo, data=edaRawData_grouped_over8)
+print(summary(model_full_combo_over8))
+```
+
+```{r}
+# only going to continue with combo model b/c it is the highest r-squared value
+cook_8 = cooks.distance(model_full_combo_over8)
+plot(cook_8,type="h",lwd=3, ylab = "Cook’s Distance over 8")
+cook_8[which(cook_8>1)]
+
+```
+
+```{r}
+res_8 = stdres(model_full_combo_over8)
+plot(edaRawData_grouped_over8$final_ts_diff, res_8, xlab = "ts_diff over 8", ylab = "Residuals over 8", pch = 19)
+
+plot(model_full_combo_over8$fitted.values, res_8, xlab = "Fitted Values over 8", ylab = "Residuals over 8", pch = 19)
+
+plot(edaRawData_grouped_over8$final_ts_diff,model_full_combo_over8$fitted.values, xlab = "actual ts diff over 8", ylab = "fitted ts diff over 8", pch = 19)
+
+hist(res_8, xlab="Residuals over 8", main= "Histogram of Residuals over 8")
+qqnorm(res_8)
+qqline(res_8)
+```
+
+
+### let's try the top 50% of matchup minutes for significance
+### so subset greater than 38 minutes (remember this is over 4 seasons)
+
+```{r}
+# this eliminates about half the rows
+edaRawData_grouped_over38 <- edaRawData_grouped[ which(edaRawData_grouped$total_matchup_min >= 38), ]
+
+nrow(edaRawData_grouped)
+nrow(edaRawData_grouped_over38)
+
+```
+
+### Now do the same for the over 38 minutes data
+
+
+```{r}
+# now do the same for the over 8 minutes data
+boxplot(final_ts_diff~off_def_posn, data=edaRawData_grouped_over38,main="ts_diff by position matchup")
+
+boxplot(final_ts_diff~off_def_height, data=edaRawData_grouped_over38,main="ts_diff by height matchup")
+
+boxplot(final_ts_diff~posn_height_combo, data=edaRawData_grouped_over38,main="ts_diff by combo matchup")
+
+# do summaries by groupings
+stats_posn_full_over38 <- edaRawData_grouped_over38 %>%                               
+  group_by(off_def_posn) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_height_full_over38 <- edaRawData_grouped_over38 %>%                               
+  group_by(off_def_height) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_all_full_over38 <- edaRawData_grouped_over38 %>%                               
+  group_by(off_def_height,off_def_posn) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+stats_combo_full_over38 <- edaRawData_grouped_over38 %>%                               
+  group_by(posn_height_combo) %>% 
+  summarize(min = min(final_ts_diff),
+            q1 = quantile(final_ts_diff, 0.25),
+            median = median(final_ts_diff),
+            mean = mean(final_ts_diff),
+            q3 = quantile(final_ts_diff, 0.75),
+            max = max(final_ts_diff))
+
+
+# export the data frames to csv for summary stats reference
+write.csv(stats_height_full_over38,"stats_height_full_over38.csv")
+write.csv(stats_posn_full_over38,"stats_posn_full_over38.csv")
+write.csv(stats_all_full_over38,"stats_all_full_over38.csv")
+write.csv(stats_combo_full_over38,"stats_combo_full_over38.csv")
+
+```
+
+
+```{r}
+model_full_both_over38 = lm(final_ts_diff~off_def_posn+off_def_height, data=edaRawData_grouped_over38)
+# print(summary(model_full_both_over38))
+
+model_full_posn_over38 = lm(final_ts_diff~off_def_posn, data=edaRawData_grouped_over38)
+# print(summary(model_full_posn_over38))
+
+model_full_height_over38 = lm(final_ts_diff~off_def_height, data=edaRawData_grouped_over38)
+# print(summary(model_full_height_over38))
+
+model_full_combo_over38 = lm(final_ts_diff~posn_height_combo, data=edaRawData_grouped_over38)
+print(summary(model_full_combo_over38))
+```
+
+```{r}
+# only going to continue with combo model b/c it is the highest r-squared value
+cook_38 = cooks.distance(model_full_combo_over38)
+plot(cook_38,type="h",lwd=3, ylab = "Cook’s Distance over 38")
+cook_38[which(cook_38>1)]
+
+```
+
+
+```{r warning=FALSE}
+res_38 = stdres(model_full_combo_over38)
+plot(edaRawData_grouped_over38$final_ts_diff, res_38, xlab = "ts_diff over 38", ylab = "Residuals over 38", pch = 19)
+
+plot(model_full_combo_over38$fitted.values, res_38, xlab = "Fitted Values over 38", ylab = "Residuals over 38", pch = 19)
+
+plot(edaRawData_grouped_over38$final_ts_diff,model_full_combo_over38$fitted.values, xlab = "actual ts diff over 38", ylab = "fitted ts diff over 38", pch = 19)
+
+hist(res_38, xlab="Residuals over 38", main= "Histogram of Residuals over 38")
+qqnorm(res_38,ylim=c(-6,6))
+qqline(res_38)
+```
+
